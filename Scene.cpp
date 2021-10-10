@@ -134,6 +134,11 @@ void Scene::draw(glm::mat4 const &world_to_clip, glm::mat4x3 const &world_to_lig
 			glUniformMatrix3fv(pipeline.NORMAL_TO_LIGHT_mat3, 1, GL_FALSE, glm::value_ptr(normal_to_light));
 		}
 
+		if(pipeline.COLOR_MODIFIER != -1U){
+			glm::vec3 & cm = drawable.transform->colorModifier;
+			glUniform3f(pipeline.COLOR_MODIFIER, cm.x, cm.y, cm.z);
+		}
+
 		//set any requested custom uniforms:
 		if (pipeline.set_uniforms) pipeline.set_uniforms();
 

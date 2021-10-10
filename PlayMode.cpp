@@ -15,13 +15,13 @@
 
 GLuint phonebank_meshes_for_lit_color_texture_program = 0;
 Load< MeshBuffer > phonebank_meshes(LoadTagDefault, []() -> MeshBuffer const * {
-	MeshBuffer const *ret = new MeshBuffer(data_path("phone-bank.pnct"));
+	MeshBuffer const *ret = new MeshBuffer(data_path("city.pnct"));
 	phonebank_meshes_for_lit_color_texture_program = ret->make_vao_for_program(lit_color_texture_program->program);
 	return ret;
 });
 
 Load< Scene > phonebank_scene(LoadTagDefault, []() -> Scene const * {
-	return new Scene(data_path("phone-bank.scene"), [&](Scene &scene, Scene::Transform *transform, std::string const &mesh_name){
+	return new Scene(data_path("city.scene"), [&](Scene &scene, Scene::Transform *transform, std::string const &mesh_name){
 		Mesh const &mesh = phonebank_meshes->lookup(mesh_name);
 
 		scene.drawables.emplace_back(transform);
@@ -37,14 +37,35 @@ Load< Scene > phonebank_scene(LoadTagDefault, []() -> Scene const * {
 	});
 });
 
+Load< Sound::Sample > countDown(LoadTagDefault, []() -> Sound::Sample const * {
+	return new Sound::Sample(data_path("countdown.opus"));
+});
+
+Load< Sound::Sample > correctSE(LoadTagDefault, []() -> Sound::Sample const * {
+	return new Sound::Sample(data_path("correct.opus"));
+});
+
+Load< Sound::Sample > shotSE(LoadTagDefault, []() -> Sound::Sample const * {
+	return new Sound::Sample(data_path("shot.opus"));
+});
+
 WalkMesh const *walkmesh = nullptr;
 Load< WalkMeshes > phonebank_walkmeshes(LoadTagDefault, []() -> WalkMeshes const * {
-	WalkMeshes *ret = new WalkMeshes(data_path("phone-bank.w"));
+	WalkMeshes *ret = new WalkMeshes(data_path("city.w"));
 	walkmesh = &ret->lookup("WalkMesh");
 	return ret;
 });
 
 PlayMode::PlayMode() : scene(*phonebank_scene) {
+
+	for (auto &transform : scene.transforms) {
+		//std::cout << "(" << transform.name <<  ")" << std::endl;
+		if (transform.name == "Goal") goal = &transform;
+	}
+	goal->colorModifier = goalDefaultColor;
+	auto mat = goal->make_local_to_world();
+	goalWorldPos = glm::vec3(mat[3][0], mat[3][1], mat[3][2]);
+
 	//create a player transform:
 	scene.transforms.emplace_back();
 	player.transform = &scene.transforms.back();
@@ -58,14 +79,19 @@ PlayMode::PlayMode() : scene(*phonebank_scene) {
 	player.camera->transform->parent = player.transform;
 
 	//player's eyes are 1.8 units above the ground:
-	player.camera->transform->position = glm::vec3(0.0f, 0.0f, 1.8f);
+	player.camera->transform->position = glm::vec3(0.0f, 0.0f, 0.7f);
 
 	//rotate camera facing direction (-z) to player facing direction (+y):
 	player.camera->transform->rotation = glm::angleAxis(glm::radians(90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
 
 	//start player walking at nearest walk point:
+	player.transform->position = playerInitPos;
+	player.transform->rotation = playerInitRot;
 	player.at = walkmesh->nearest_walk_point(player.transform->position);
 
+	// font
+	hintFont = std::make_shared<TextRenderer>(data_path("OpenSans-B9K8.ttf"));
+	messageFont = std::make_shared<TextRenderer>(data_path("SeratUltra-1GE24.ttf"));
 }
 
 PlayMode::~PlayMode() {
@@ -94,6 +120,11 @@ bool PlayMode::handle_event(SDL_Event const &evt, glm::uvec2 const &window_size)
 			down.pressed = true;
 			return true;
 		}
+		else if (evt.key.keysym.sym == SDLK_SPACE) {
+			space.downs += 1;
+			space.pressed = true;
+			return true;
+		}
 	} else if (evt.type == SDL_KEYUP) {
 		if (evt.key.keysym.sym == SDLK_a) {
 			left.pressed = false;
@@ -106,6 +137,10 @@ bool PlayMode::handle_event(SDL_Event const &evt, glm::uvec2 const &window_size)
 			return true;
 		} else if (evt.key.keysym.sym == SDLK_s) {
 			down.pressed = false;
+			return true;
+		}
+		else if (evt.key.keysym.sym == SDLK_SPACE) {
+			space.pressed = false;
 			return true;
 		}
 	} else if (evt.type == SDL_MOUSEBUTTONDOWN) {
@@ -137,18 +172,84 @@ bool PlayMode::handle_event(SDL_Event const &evt, glm::uvec2 const &window_size)
 }
 
 void PlayMode::update(float elapsed) {
+
+	// check if win
+	{
+		static bool correctSEPlayed = false;
+		if(win){
+			if(!correctSEPlayed){
+				Sound::play_3D(*correctSE, 0.4f, goalWorldPos);
+				correctSEPlayed = true;
+			}
+			return;
+		}
+		// check
+		auto mat = player.transform->make_local_to_world();
+		glm::vec3 playerPos = glm::vec3(mat[3][0], mat[3][1], mat[3][2]);
+		if (playerPos.y >= 9){
+			win = true;
+			gameOver = false;
+			return;
+		}
+	}
+
+	static bool shotPlayed = false;
+	//check for gameover & restart
+	if(gameOver){
+		// SE
+		if(!shotPlayed){
+			Sound::play_3D(*shotSE, 0.2f, goalWorldPos);
+			shotPlayed = true;
+		}
+		// restart
+		if(space.pressed){
+			gameOver = false;
+			player.transform->position = playerInitPos;
+			player.transform->rotation = playerInitRot;
+			player.at = walkmesh->nearest_walk_point(player.transform->position);
+			curVelocity = glm::vec3(0);
+			canMove = false;
+			startCountDown = false;
+			shotPlayed = false;
+			timeLeft = totalTime;
+		}
+		left.pressed = false;
+		right.pressed = false;
+		up.pressed = false;
+		down.pressed = false;
+	}
+
 	//player walking:
 	{
 		//combine inputs into a move:
-		constexpr float PlayerSpeed = 3.0f;
-		glm::vec2 move = glm::vec2(0.0f);
-		if (left.pressed && !right.pressed) move.x =-1.0f;
-		if (!left.pressed && right.pressed) move.x = 1.0f;
-		if (down.pressed && !up.pressed) move.y =-1.0f;
-		if (!down.pressed && up.pressed) move.y = 1.0f;
+		glm::vec2 force = glm::vec2(0.0f);
+		if (left.pressed && !right.pressed) force.x =-1.0f;
+		if (!left.pressed && right.pressed) force.x = 1.0f;
+		if (down.pressed && !up.pressed) force.y =-1.0f;
+		if (!down.pressed && up.pressed) force.y = 1.0f;
 
-		//make it so that moving diagonally doesn't go faster:
-		if (move != glm::vec2(0.0f)) move = glm::normalize(move) * PlayerSpeed * elapsed;
+		// update velocity
+		glm::vec2 newVelocity = glm::vec3(0);
+		// apllying force (has input)
+		if (force != glm::vec2(0.0f)) {
+			force = glm::normalize(force);
+			// new velicoty
+			newVelocity = curVelocity + force * acceleration * elapsed;
+		}
+		// no force, use firction
+		else{
+			if (curVelocity != glm::vec2(0)){
+				newVelocity = curVelocity - glm::normalize(curVelocity) * friction * elapsed;
+				// make sure frictiuon does not change the direction
+				if ((curVelocity.x>0 && newVelocity.x <0) || (curVelocity.x<0 && newVelocity.x >0))
+					newVelocity.x = 0;
+				if ((curVelocity.y>0 && newVelocity.y <0) || (curVelocity.y<0 && newVelocity.y >0)) 
+					newVelocity.y = 0;
+			}
+		}
+		// movement
+		glm::vec2 move = (newVelocity + curVelocity) / 2.0f * elapsed;
+		curVelocity = newVelocity;
 
 		//get move in world coordinate system:
 		glm::vec3 remain = player.transform->make_local_to_world() * glm::vec4(move.x, move.y, 0.0f, 0.0f);
@@ -183,7 +284,6 @@ void PlayMode::update(float elapsed) {
 				glm::vec3 along = glm::normalize(b-a);
 				glm::vec3 normal = glm::normalize(glm::cross(b-a, c-a));
 				glm::vec3 in = glm::cross(normal, along);
-
 				//check how much 'remain' is pointing out of the triangle:
 				float d = glm::dot(remain, in);
 				if (d < 0.0f) {
@@ -212,21 +312,51 @@ void PlayMode::update(float elapsed) {
 			player.transform->rotation = glm::normalize(adjust * player.transform->rotation);
 		}
 
-		/*
-		glm::mat4x3 frame = camera->transform->make_local_to_parent();
-		glm::vec3 right = frame[0];
-		//glm::vec3 up = frame[1];
-		glm::vec3 forward = -frame[2];
-
-		camera->transform->position += move.x * right + move.y * forward;
-		*/
+		// check if play moving when can't
+		if(!canMove && move != glm::vec2(0))
+			gameOver = true;
+		// time up
+		if(timeLeft <= 0)
+			gameOver = true;
 	}
 
-	//reset button press counters:
-	left.downs = 0;
-	right.downs = 0;
-	up.downs = 0;
-	down.downs = 0;
+	if (gameOver)
+		return;
+
+	goal->colorModifier = goalDefaultColor;
+	// play sound
+	{
+		static float soundWaitCount = 0;
+		soundWaitCount += elapsed;
+		if(soundWaitCount >= soundWaitTime){
+			soundWaitCount = 0;
+			Sound::play_3D(*countDown, 1, goalWorldPos);
+			// start count down when sound starts to play
+			startCountDown = true;
+			canMove = true;
+		}
+	}
+	// count down
+	if(startCountDown){
+		static float countDownCount = 0;
+		countDownCount += elapsed;
+		if(countDownCount >= countDownTime){
+			countDownCount = 0;
+			canMove = false;
+			startCountDown = false;
+		}
+		// gola color
+		goalBlinkModifier += elapsed ;
+		goalBlinkModifier -= std::floor(goalBlinkModifier);
+		goal->colorModifier = glm::vec3(
+			std::min(255,std::max(0,int32_t(255 * 0.5f * (0.5f + std::sin( 2.0f * M_PI * (goalBlinkModifier + 0.0f / 3.0f) ) ) ))) /255.0f,
+			std::min(255,std::max(0,int32_t(255 * 0.5f * (0.5f + std::sin( 2.0f * M_PI * (goalBlinkModifier + 1.0f / 3.0f) ) ) ))) /255.0f,
+			std::min(255,std::max(0,int32_t(255 * 0.5f * (0.5f + std::sin( 2.0f * M_PI * (goalBlinkModifier + 2.0f / 3.0f) ) ) ))) /255.0f
+		);
+	}
+
+	timeLeft -= elapsed;
+	if (timeLeft < 0) timeLeft = 0;
 }
 
 void PlayMode::draw(glm::uvec2 const &drawable_size) {
@@ -250,26 +380,24 @@ void PlayMode::draw(glm::uvec2 const &drawable_size) {
 
 	scene.draw(*player.camera);
 
-	{ //use DrawLines to overlay some text:
-		glDisable(GL_DEPTH_TEST);
-		float aspect = float(drawable_size.x) / float(drawable_size.y);
-		DrawLines lines(glm::mat4(
-			1.0f / aspect, 0.0f, 0.0f, 0.0f,
-			0.0f, 1.0f, 0.0f, 0.0f,
-			0.0f, 0.0f, 1.0f, 0.0f,
-			0.0f, 0.0f, 0.0f, 1.0f
-		));
-
-		constexpr float H = 0.09f;
-		lines.draw_text("Mouse motion looks; WASD moves; escape ungrabs mouse",
-			glm::vec3(-aspect + 0.1f * H, -1.0 + 0.1f * H, 0.0),
-			glm::vec3(H, 0.0f, 0.0f), glm::vec3(0.0f, H, 0.0f),
-			glm::u8vec4(0x00, 0x00, 0x00, 0x00));
-		float ofs = 2.0f / drawable_size.y;
-		lines.draw_text("Mouse motion looks; WASD moves; escape ungrabs mouse",
-			glm::vec3(-aspect + 0.1f * H + ofs, -1.0 + + 0.1f * H + ofs, 0.0),
-			glm::vec3(H, 0.0f, 0.0f), glm::vec3(0.0f, H, 0.0f),
-			glm::u8vec4(0xff, 0xff, 0xff, 0x00));
+	if(gameOver){
+		if(timeLeft<=0)
+			messageFont->draw("TIME'S UP. YOU DIE", 10.0f, 300.0f, glm::vec2(0.8,0.8), glm::vec3(0.7f, 0.2f, 0.4f));
+		else
+			messageFont->draw("YOU DIE", 200.0f, 300.0f, glm::vec2(0.8,0.8), glm::vec3(0.7f, 0.2f, 0.4f));
+		messageFont->draw("Press Space to Restart", 150.0f, 200.0f, glm::vec2(0.25,0.25), glm::vec3(0.9f, 0.4f, 0.7f));
 	}
+	if(win)
+		messageFont->draw("VICTORY", 200.0f, 300.0f, glm::vec2(0.8,0.8), glm::vec3(0.4f, 0.5f, 0.9f));
+	else{
+		if(canMove){
+			hintFont->draw("Move Now", 20.0f, 550.0f, glm::vec2(0.2,0.25), glm::vec3(0.2, 0.8f, 0.2f));
+		}
+		else{
+			hintFont->draw("STOP !!!", 20.0f, 550.0f, glm::vec2(0.2,0.25), glm::vec3(1.0f, 0.2f, 0.2f));
+		}
+		hintFont->draw("Time Left: " + std::to_string((int)(timeLeft+0.9)), 650.0f, 550.0f, glm::vec2(0.2,0.25), glm::vec3(.6f, 0.9f, 0.4f));
+	}
+
 	GL_ERRORS();
 }

@@ -145,6 +145,8 @@ GAME_NAMES =
 	Sound
 	load_wav
 	load_opus
+	TextRenderer
+	TextRenderProgram
 	;
 
 COMMON_NAMES =

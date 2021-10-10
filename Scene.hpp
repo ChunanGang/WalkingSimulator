@@ -35,6 +35,8 @@ struct Scene {
 		//The transform above may be relative to some parent transform:
 		Transform *parent = nullptr;
 
+		glm::vec3 colorModifier = glm::vec3(0,0,0);
+
 		//It is often convenient to construct matrices representing this transformation:
 		// ..relative to its parent:
 		glm::mat4x3 make_local_to_parent() const;
@@ -69,6 +71,7 @@ struct Scene {
 			GLuint OBJECT_TO_CLIP_mat4 = -1U; //uniform location for object to clip space matrix
 			GLuint OBJECT_TO_LIGHT_mat4x3 = -1U; //uniform location for object to light space (== world space) matrix
 			GLuint NORMAL_TO_LIGHT_mat3 = -1U; //uniform location for normal to light space (== world space) matrix
+			GLuint COLOR_MODIFIER = -1U;
 
 			std::function< void() > set_uniforms; //(optional) function to set any other useful uniforms
 
